@@ -1,0 +1,59 @@
+[toolchain]
+anchor_version = "0.31.0"
+
+[features]
+seeds = false
+skip-lint = false
+
+[programs.localnet]
+escrow = "Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS"
+
+[programs.devnet]
+escrow = "Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS"
+
+[programs.mainnet-beta]
+escrow = "Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS"
+
+# SOON devnet configuration
+[programs.soon-devnet]
+escrow = "Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS"
+
+[registry]
+url = "https://api.apr.dev"
+
+[provider]
+cluster = "devnet"  # Set to devnet for testing
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/soon/**/*.ts"
+
+[workspace]
+types = "deployments/soon/types"
+
+# SOON devnet specific configuration
+[soon]
+# Using SOON devnet RPC
+devnet_rpc = "https://rpc.fc.devnet.soo.network/rpc"
+testnet_rpc = "https://rpc.testnet.soo.network/rpc"
+mainnet_rpc = "https://rpc.mainnet.soo.network/rpc"
+
+# Explorer and faucet URLs
+devnet_explorer = "https://explorer.devnet.soo.network/"
+devnet_faucet = "https://faucet.devnet.soo.network/"
+
+# Chain compatibility
+chain_id = "soon-devnet"
+commitment = "confirmed"
+timeout = 60000
+
+# SVM compatibility
+svm_version = "Decoupled SVM"
+solana_compatibility = true
+program_loader = "BPFLoaderUpgradeab1e11111111111111111111111"
+
+# Devnet specific settings
+[soon.devnet]
+bridge_url = "https://bridge.devnet.soo.network/"
+gas_token = "SOL"
+native_token = "SOON"

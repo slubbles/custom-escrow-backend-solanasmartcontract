@@ -9,10 +9,27 @@
     "test:integration": "yarn run ts-mocha -p ./tsconfig.json tests/escrow-integration.ts",
     "test:deployment": "yarn run ts-mocha -p ./tsconfig.json tests/escrow-deployment.ts",
     "test:devnet": "ANCHOR_PROVIDER_URL=https://api.devnet.solana.com yarn run ts-mocha -p ./tsconfig.json tests/devnet-deployment-test.ts",
+    
     "build": "anchor build",
+    "clean": "anchor clean",
+    
     "deploy": "anchor deploy",
     "deploy:devnet": "anchor deploy --provider.cluster devnet",
-    "clean": "anchor clean"
+    "deploy:solana:devnet": "cp configs/solana-devnet.toml Anchor.toml && anchor deploy --provider.cluster devnet",
+    "deploy:solana:mainnet": "cp configs/solana-mainnet.toml Anchor.toml && anchor deploy --provider.cluster mainnet-beta",
+    
+    "deploy:soon:testnet": "cp configs/soon-network.toml Anchor.toml && anchor deploy --provider.cluster soon-testnet",
+    "deploy:soon:devnet": "cp configs/soon-devnet.toml Anchor.toml && anchor deploy --provider.cluster https://rpc.fc.devnet.soo.network/rpc",
+    "deploy:soon:mainnet": "cp configs/soon-network.toml Anchor.toml && anchor deploy --provider.cluster https://rpc.mainnet.soo.network/rpc",
+    
+    "test:solana": "cp configs/solana-devnet.toml Anchor.toml && yarn run ts-mocha -p ./tsconfig.json tests/solana/**/*.ts",
+    "test:soon": "cp configs/soon-network.toml Anchor.toml && yarn run ts-mocha -p ./tsconfig.json tests/soon/**/*.ts",
+    
+    "verify:soon:mainnet": "node scripts/verify-soon-deployment.js",
+    "test:all-networks": "npm run test:solana && npm run test:soon",
+    
+    "switch:solana": "cp configs/solana-devnet.toml Anchor.toml",
+    "switch:soon": "cp configs/soon-network.toml Anchor.toml"
   },
   "devDependencies": {
     "@coral-xyz/anchor": "^0.30.1",
