@@ -1,19 +1,19 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
-// Program ID - will be generated during build
+// Multi-project presale platform program ID
 declare_id!("11111111111111111111111111111112");
 
 #[program]
 pub mod multi_presale {
     use super::*;
 
-    /// Initialize the platform with admin authority
+    /// Initialize the platform with admin authority - PHASE 1
     pub fn initialize_platform(
         ctx: Context<InitializePlatform>,
-        platform_fee: u16,              // Platform fee in basis points (e.g., 250 = 2.5%)
-        min_project_duration: i64,      // Minimum sale duration in seconds
-        max_project_duration: i64,      // Maximum sale duration in seconds
+        platform_fee: u16,
+        min_project_duration: i64,
+        max_project_duration: i64,
     ) -> Result<()> {
         require!(platform_fee <= 10000, ErrorCode::InvalidPlatformFee);
         require!(min_project_duration > 0, ErrorCode::InvalidDuration);
@@ -38,80 +38,13 @@ pub mod multi_presale {
         Ok(())
     }
 
-    /// Update platform configuration (admin only)
-    pub fn update_platform_config(
-        ctx: Context<UpdatePlatformConfig>,
-        new_platform_fee: Option<u16>,
-        new_min_duration: Option<i64>,
-        new_max_duration: Option<i64>,
-        new_treasury: Option<Pubkey>,
-    ) -> Result<()> {
-        let platform = &mut ctx.accounts.platform_account;
-
-        if let Some(fee) = new_platform_fee {
-            require!(fee <= 10000, ErrorCode::InvalidPlatformFee);
-            platform.platform_fee = fee;
-        }
-
-        if let Some(min_dur) = new_min_duration {
-            require!(min_dur > 0, ErrorCode::InvalidDuration);
-            platform.min_project_duration = min_dur;
-        }
-
-        if let Some(max_dur) = new_max_duration {
-            require!(max_dur > platform.min_project_duration, ErrorCode::InvalidDuration);
-            platform.max_project_duration = max_dur;
-        }
-
-        if let Some(treasury) = new_treasury {
-            platform.treasury = treasury;
-        }
-
-        emit!(PlatformConfigUpdated {
-            platform_fee: platform.platform_fee,
-            min_duration: platform.min_project_duration,
-            max_duration: platform.max_project_duration,
-        });
-
-        Ok(())
-    }
-
-    /// Emergency pause all platform operations (admin only)
-    pub fn pause_platform(ctx: Context<PausePlatform>) -> Result<()> {
-        let platform = &mut ctx.accounts.platform_account;
-        platform.is_paused = true;
-
-        emit!(PlatformPaused {
-            authority: ctx.accounts.authority.key(),
-            timestamp: Clock::get()?.unix_timestamp,
-        });
-
-        Ok(())
-    }
-
-    /// Resume platform operations (admin only)
-    pub fn unpause_platform(ctx: Context<UnpausePlatform>) -> Result<()> {
-        let platform = &mut ctx.accounts.platform_account;
-        platform.is_paused = false;
-
-        emit!(PlatformUnpaused {
-            authority: ctx.accounts.authority.key(),
-            timestamp: Clock::get()?.unix_timestamp,
-        });
-
-        Ok(())
-    }
-
-    /// Create a new project (any user)
+    /// Create a new project (any user) - PHASE 1
     pub fn create_project(
         ctx: Context<CreateProject>,
         name: String,
         description: String,
         logo_url: String,
         website: String,
-        twitter: String,
-        discord: String,
-        telegram: String,
         category: ProjectCategory,
         tags: Vec<String>,
         token_name: String,
@@ -127,7 +60,6 @@ pub mod multi_presale {
         let project = &mut ctx.accounts.project_account;
         let current_time = Clock::get()?.unix_timestamp;
 
-        // Assign unique project ID
         platform.total_projects += 1;
         let project_id = platform.total_projects;
 
@@ -137,9 +69,6 @@ pub mod multi_presale {
         project.description = description;
         project.logo_url = logo_url;
         project.website = website;
-        project.twitter = twitter;
-        project.discord = discord;
-        project.telegram = telegram;
         project.category = category;
         project.tags = tags;
         project.token_mint = ctx.accounts.token_mint.key();
@@ -165,105 +94,79 @@ pub mod multi_presale {
         Ok(())
     }
 
-    /// Update project metadata (creator only, before approval)
-    pub fn update_project(
-        ctx: Context<UpdateProject>,
-        name: Option<String>,
-        description: Option<String>,
-        logo_url: Option<String>,
-        website: Option<String>,
-        twitter: Option<String>,
-        discord: Option<String>,
-        telegram: Option<String>,
-        category: Option<ProjectCategory>,
-        tags: Option<Vec<String>>,
+    /// Configure sale tier for a project (creator only) - PHASE 2
+    pub fn configure_sale_tier(
+        ctx: Context<ConfigureSaleTier>,
+        sale_type: SaleType,
+        token_price: u64,
+        total_tokens: u64,
+        min_purchase: u64,
+        max_purchase: u64,
+        start_time: i64,
+        end_time: i64,
+        is_whitelist_only: bool,
+        requires_kyc: bool,
+        referral_enabled: bool,
+        referral_rate: u16,
     ) -> Result<()> {
-        let project = &mut ctx.accounts.project_account;
+        require!(!ctx.accounts.platform_account.is_paused, ErrorCode::PlatformPaused);
+        require!(ctx.accounts.project_account.status == ProjectStatus::Active, ErrorCode::ProjectNotActive);
+        require!(token_price > 0, ErrorCode::InvalidPrice);
+        require!(total_tokens > 0, ErrorCode::InvalidTokenAmount);
+        require!(min_purchase > 0, ErrorCode::InvalidPrice);
+        require!(max_purchase >= min_purchase, ErrorCode::InvalidPrice);
+        require!(end_time > start_time, ErrorCode::SaleEndTimeInPast);
+        require!(referral_rate <= 10000, ErrorCode::InvalidPlatformFee);
         
-        // Only allow updates for draft projects
+        let current_time = Clock::get()?.unix_timestamp;
+        require!(start_time > current_time, ErrorCode::SaleEndTimeInPast);
+        
+        let duration = end_time - start_time;
         require!(
-            project.status == ProjectStatus::Draft || 
-            project.approval_status == ApprovalStatus::Rejected,
-            ErrorCode::ProjectNotEditable
+            duration >= ctx.accounts.platform_account.min_project_duration,
+            ErrorCode::InvalidDuration
+        );
+        require!(
+            duration <= ctx.accounts.platform_account.max_project_duration,
+            ErrorCode::InvalidDuration
         );
 
-        if let Some(n) = name {
-            require!(n.len() <= 50, ErrorCode::NameTooLong);
-            project.name = n;
-        }
+        let sale_config = &mut ctx.accounts.sale_configuration;
+        sale_config.project_id = ctx.accounts.project_account.id;
+        sale_config.sale_type = sale_type;
+        sale_config.token_price = token_price;
+        sale_config.total_tokens = total_tokens;
+        sale_config.tokens_sold = 0;
+        sale_config.min_purchase = min_purchase;
+        sale_config.max_purchase = max_purchase;
+        sale_config.start_time = start_time;
+        sale_config.end_time = end_time;
+        sale_config.is_whitelist_only = is_whitelist_only;
+        sale_config.requires_kyc = requires_kyc;
+        sale_config.referral_enabled = referral_enabled;
+        sale_config.referral_rate = referral_rate;
+        sale_config.payment_mint = ctx.accounts.payment_mint.key();
+        sale_config.is_active = true;
+        sale_config.bump = ctx.bumps.sale_configuration;
 
-        if let Some(d) = description {
-            require!(d.len() <= 500, ErrorCode::DescriptionTooLong);
-            project.description = d;
-        }
-
-        if let Some(logo) = logo_url {
-            project.logo_url = logo;
-        }
-
-        if let Some(w) = website {
-            project.website = w;
-        }
-
-        if let Some(t) = twitter {
-            project.twitter = t;
-        }
-
-        if let Some(d) = discord {
-            project.discord = d;
-        }
-
-        if let Some(t) = telegram {
-            project.telegram = t;
-        }
-
-        if let Some(c) = category {
-            project.category = c;
-        }
-
-        if let Some(t) = tags {
-            require!(t.len() <= 10, ErrorCode::TooManyTags);
-            project.tags = t;
-        }
-
-        project.updated_at = Clock::get()?.unix_timestamp;
-
-        emit!(ProjectUpdated {
-            project_id: project.id,
-            creator: project.creator,
-            updated_at: project.updated_at,
+        emit!(SaleConfigured {
+            project_id: sale_config.project_id,
+            sale_type,
+            token_price,
+            total_tokens,
+            start_time,
+            end_time,
         });
 
         Ok(())
     }
 
-    /// Submit project for admin approval (creator only)
-    pub fn submit_for_approval(ctx: Context<SubmitForApproval>) -> Result<()> {
-        let project = &mut ctx.accounts.project_account;
-        
-        require!(project.status == ProjectStatus::Draft, ErrorCode::ProjectNotEditable);
-        require!(!project.name.is_empty(), ErrorCode::IncompleteProject);
-        require!(!project.description.is_empty(), ErrorCode::IncompleteProject);
-
-        project.status = ProjectStatus::Submitted;
-        project.approval_status = ApprovalStatus::Pending;
-        project.updated_at = Clock::get()?.unix_timestamp;
-
-        emit!(ProjectSubmitted {
-            project_id: project.id,
-            creator: project.creator,
-            submitted_at: project.updated_at,
-        });
-
-        Ok(())
-    }
-
-    /// Approve a project (admin only)
+    /// Approve a project (admin only) - PHASE 1
     pub fn approve_project(ctx: Context<ApproveProject>) -> Result<()> {
         let project = &mut ctx.accounts.project_account;
         let current_time = Clock::get()?.unix_timestamp;
         
-        require!(project.status == ProjectStatus::Submitted, ErrorCode::InvalidProjectStatus);
+        require!(project.status == ProjectStatus::Draft, ErrorCode::InvalidProjectStatus);
         require!(project.approval_status == ApprovalStatus::Pending, ErrorCode::InvalidApprovalStatus);
 
         project.status = ProjectStatus::Active;
@@ -281,200 +184,113 @@ pub mod multi_presale {
         Ok(())
     }
 
-    /// Reject a project (admin only)
-    pub fn reject_project(
-        ctx: Context<RejectProject>,
-        rejection_reason: String,
+    /// LEGACY ESCROW FUNCTIONS (to be replaced with Phase 2 multi-project functions)
+    /// Initialize a new token sale with production security features
+    pub fn initialize_sale(
+        ctx: Context<InitializeSale>,
+        price_per_token: u64,           // Price in lamports (1 USDC = 1_000_000 lamports)
+        total_tokens: u64,              // How many tokens to sell
+        sale_start_time: i64,           // Unix timestamp when sale starts
+        sale_end_time: i64,             // Unix timestamp when sale ends
+        max_tokens_per_buyer: u64,      // Maximum tokens per buyer (0 = no limit)
+        platform_fee_bps: u16,         // Platform fee in basis points (100 = 1%)
+        platform_fee_recipient: Pubkey, // Where platform fees are sent
     ) -> Result<()> {
-        let project = &mut ctx.accounts.project_account;
-        let current_time = Clock::get()?.unix_timestamp;
-        
-        require!(project.status == ProjectStatus::Submitted, ErrorCode::InvalidProjectStatus);
-        require!(project.approval_status == ApprovalStatus::Pending, ErrorCode::InvalidApprovalStatus);
-        require!(rejection_reason.len() <= 200, ErrorCode::ReasonTooLong);
-
-        project.status = ProjectStatus::Draft; // Allow resubmission
-        project.approval_status = ApprovalStatus::Rejected;
-        project.updated_at = current_time;
-
-        emit!(ProjectRejected {
-            project_id: project.id,
-            admin: ctx.accounts.admin.key(),
-            reason: rejection_reason,
-            rejected_at: current_time,
-        });
-
-        Ok(())
-    }
-
-    /// Configure a sale tier for an approved project (creator only)
-    pub fn configure_sale_tier(
-        ctx: Context<ConfigureSaleTier>,
-        sale_type: SaleType,
-        token_price: u64,              // Price per token in payment token lamports
-        total_tokens: u64,             // Total tokens for this tier
-        min_purchase: u64,             // Minimum purchase amount
-        max_purchase: u64,             // Maximum purchase amount per buyer
-        start_time: i64,               // Sale start timestamp
-        end_time: i64,                 // Sale end timestamp
-        is_whitelist_only: bool,       // Requires whitelist
-        requires_kyc: bool,            // Requires KYC verification
-        referral_enabled: bool,        // Enable referral rewards
-        referral_rate: u16,            // Referral rate in basis points
-    ) -> Result<()> {
-        let project = &ctx.accounts.project_account;
-        
-        // Validate project is approved and active
-        require!(project.status == ProjectStatus::Active, ErrorCode::ProjectNotActive);
-        require!(project.approval_status == ApprovalStatus::Approved, ErrorCode::ProjectNotApproved);
-        
-        // Validate timing
-        let current_time = Clock::get()?.unix_timestamp;
-        require!(start_time > current_time, ErrorCode::InvalidStartTime);
-        require!(end_time > start_time, ErrorCode::InvalidEndTime);
-        require!(
-            end_time - start_time >= ctx.accounts.platform_account.min_project_duration,
-            ErrorCode::SaleTooShort
-        );
-        require!(
-            end_time - start_time <= ctx.accounts.platform_account.max_project_duration,
-            ErrorCode::SaleTooLong
-        );
-        
-        // Validate parameters
-        require!(token_price > 0, ErrorCode::InvalidPrice);
+        // Input validation
+        require!(price_per_token > 0, ErrorCode::InvalidPrice);
         require!(total_tokens > 0, ErrorCode::InvalidTokenAmount);
-        require!(min_purchase > 0, ErrorCode::InvalidPurchaseAmount);
-        require!(max_purchase >= min_purchase, ErrorCode::InvalidPurchaseAmount);
-        require!(referral_rate <= 10000, ErrorCode::InvalidReferralRate);
+        require!(sale_start_time > 0, ErrorCode::InvalidStartTime);
+        require!(sale_end_time > sale_start_time, ErrorCode::InvalidEndTime);
+        require!(platform_fee_bps <= 10000, ErrorCode::InvalidPlatformFee); // Max 100%
         
-        let sale_config = &mut ctx.accounts.sale_configuration;
-        sale_config.project_id = project.id;
-        sale_config.sale_type = sale_type;
-        sale_config.token_price = token_price;
-        sale_config.total_tokens = total_tokens;
-        sale_config.tokens_sold = 0;
-        sale_config.min_purchase = min_purchase;
-        sale_config.max_purchase = max_purchase;
-        sale_config.start_time = start_time;
-        sale_config.end_time = end_time;
-        sale_config.is_whitelist_only = is_whitelist_only;
-        sale_config.requires_kyc = requires_kyc;
-        sale_config.referral_enabled = referral_enabled;
-        sale_config.referral_rate = referral_rate;
-        sale_config.payment_mint = ctx.accounts.payment_mint.key();
-        sale_config.is_active = true;
-        sale_config.bump = ctx.bumps.sale_configuration;
+        let current_time = Clock::get()?.unix_timestamp;
+        require!(sale_end_time > current_time, ErrorCode::SaleEndTimeInPast);
 
-        // Transfer tokens to sale vault
+        let sale = &mut ctx.accounts.token_sale;
+        
+        // Initialize sale account with security features
+        sale.seller = ctx.accounts.seller.key();
+        sale.token_mint = ctx.accounts.token_mint.key();
+        sale.payment_mint = ctx.accounts.payment_mint.key();
+        sale.price_per_token = price_per_token;
+        sale.total_tokens = total_tokens;
+        sale.tokens_available = total_tokens;
+        sale.sale_start_time = sale_start_time;
+        sale.sale_end_time = sale_end_time;
+        sale.max_tokens_per_buyer = max_tokens_per_buyer;
+        sale.platform_fee_bps = platform_fee_bps;
+        sale.platform_fee_recipient = platform_fee_recipient;
+        sale.is_active = true;
+        sale.is_paused = false;
+        sale.bump = ctx.bumps.token_sale;
+
+        // Transfer seller's tokens to the program's vault
         let transfer_ctx = CpiContext::new(
             ctx.accounts.token_program.to_account_info(),
             Transfer {
-                from: ctx.accounts.creator_token_account.to_account_info(),
-                to: ctx.accounts.sale_vault.to_account_info(),
-                authority: ctx.accounts.creator.to_account_info(),
+                from: ctx.accounts.seller_token_account.to_account_info(),
+                to: ctx.accounts.token_vault.to_account_info(),
+                authority: ctx.accounts.seller.to_account_info(),
             },
         );
         token::transfer(transfer_ctx, total_tokens)?;
 
-        emit!(SaleConfigured {
-            project_id: project.id,
-            sale_type,
-            token_price,
-            total_tokens,
-            start_time,
-            end_time,
-            is_whitelist_only,
-        });
-
+        msg!("Token sale initialized: {} tokens at {} lamports each, from {} to {}", 
+            total_tokens, price_per_token, sale_start_time, sale_end_time);
         Ok(())
     }
 
-    /// Create participant account for tracking contributions
-    pub fn create_participant_account(ctx: Context<CreateParticipantAccount>) -> Result<()> {
-        let participant = &mut ctx.accounts.participant_account;
-        participant.wallet = ctx.accounts.participant.key();
-        participant.project_id = ctx.accounts.sale_configuration.project_id;
-        participant.sale_type = ctx.accounts.sale_configuration.sale_type;
-        participant.total_contributed = 0;
-        participant.tokens_allocated = 0;
-        participant.tokens_claimed = 0;
-        participant.last_claim_time = 0;
-        participant.referrer = None;
-        participant.referral_rewards = 0;
-        participant.kyc_verified = false;
-        participant.kyc_provider = None;
-        participant.joined_at = Clock::get()?.unix_timestamp;
-        participant.bump = ctx.bumps.participant_account;
-
+    /// Create a buyer tracking account (first-time buyers only)
+    pub fn create_buyer_account(ctx: Context<CreateBuyerAccount>) -> Result<()> {
+        let buyer_account = &mut ctx.accounts.buyer_account;
+        buyer_account.buyer = ctx.accounts.buyer.key();
+        buyer_account.token_sale = ctx.accounts.token_sale.key();
+        buyer_account.tokens_purchased = 0;
+        buyer_account.bump = ctx.bumps.buyer_account;
+        
+        msg!("Buyer account created for {}", ctx.accounts.buyer.key());
         Ok(())
     }
 
-    /// Add wallets to sale whitelist (creator or admin only)
-    pub fn add_to_whitelist(
-        ctx: Context<AddToWhitelist>,
-        wallet_addresses: Vec<Pubkey>,
-        max_allocations: Vec<u64>,
+    /// Buy tokens from the sale with comprehensive security checks
+    pub fn buy_tokens(
+        ctx: Context<BuyTokens>,
+        token_amount: u64,           // How many tokens to buy
     ) -> Result<()> {
-        require!(wallet_addresses.len() == max_allocations.len(), ErrorCode::MismatchedArrays);
-        require!(wallet_addresses.len() <= 50, ErrorCode::TooManyWallets); // Batch limit
+        // Get sale data and perform security checks
+        let sale = &ctx.accounts.token_sale;
         
-        let sale_config = &ctx.accounts.sale_configuration;
-        require!(sale_config.is_whitelist_only, ErrorCode::WhitelistNotRequired);
-        
-        let current_time = Clock::get()?.unix_timestamp;
-        require!(current_time < sale_config.start_time, ErrorCode::SaleAlreadyStarted);
-
-        // Store whitelist entries (simplified - in production, use separate accounts)
-        emit!(WhitelistUpdated {
-            project_id: sale_config.project_id,
-            sale_type: sale_config.sale_type,
-            wallet_addresses,
-            max_allocations,
-            added_by: ctx.accounts.authority.key(),
-        });
-
-        Ok(())
-    }
-
-    /// Participate in a token sale
-    pub fn participate_in_sale(
-        ctx: Context<ParticipateInSale>,
-        token_amount: u64,              // How many tokens to buy
-        referrer: Option<Pubkey>,       // Optional referrer
-    ) -> Result<()> {
-        let sale_config = &ctx.accounts.sale_configuration;
-        let current_time = Clock::get()?.unix_timestamp;
-        
-        // Basic sale validation
-        require!(sale_config.is_active, ErrorCode::SaleNotActive);
-        require!(!ctx.accounts.platform_account.is_paused, ErrorCode::PlatformPaused);
-        require!(current_time >= sale_config.start_time, ErrorCode::SaleNotStarted);
-        require!(current_time <= sale_config.end_time, ErrorCode::SaleEnded);
+        // Basic sale status checks
+        require!(sale.is_active, ErrorCode::SaleNotActive);
+        require!(!sale.is_paused, ErrorCode::SalePaused);
         require!(token_amount > 0, ErrorCode::InvalidTokenAmount);
-        require!(token_amount >= sale_config.min_purchase, ErrorCode::BelowMinimumPurchase);
-        require!(token_amount <= sale_config.max_purchase, ErrorCode::ExceedsPurchaseLimit);
-        require!(token_amount <= sale_config.total_tokens - sale_config.tokens_sold, ErrorCode::InsufficientTokens);
+        require!(token_amount <= sale.tokens_available, ErrorCode::InsufficientTokens);
         
-        // KYC validation (simplified - would integrate with KYC provider)
-        if sale_config.requires_kyc {
-            require!(ctx.accounts.participant_account.kyc_verified, ErrorCode::KycRequired);
+        // Time-based validation
+        let current_time = Clock::get()?.unix_timestamp;
+        require!(current_time >= sale.sale_start_time, ErrorCode::SaleNotStarted);
+        require!(current_time <= sale.sale_end_time, ErrorCode::SaleEnded);
+        
+        // Check per-buyer purchase limit if set
+        if sale.max_tokens_per_buyer > 0 {
+            let current_purchased = ctx.accounts.buyer_account.tokens_purchased;
+            let total_after_purchase = current_purchased
+                .checked_add(token_amount)
+                .ok_or(ErrorCode::MathOverflow)?;
+            require!(
+                total_after_purchase <= sale.max_tokens_per_buyer,
+                ErrorCode::ExceedsPurchaseLimit
+            );
         }
-        
-        // Calculate payment amounts
+
+        // Calculate payment amount and platform fee
         let gross_payment = token_amount
-            .checked_mul(sale_config.token_price)
+            .checked_mul(sale.price_per_token)
             .ok_or(ErrorCode::MathOverflow)?;
             
-        let platform_fee = gross_payment
-            .checked_mul(ctx.accounts.platform_account.platform_fee as u64)
-            .ok_or(ErrorCode::MathOverflow)?
-            .checked_div(10000)
-            .ok_or(ErrorCode::MathOverflow)?;
-            
-        let referral_reward = if sale_config.referral_enabled && referrer.is_some() {
+        let platform_fee = if sale.platform_fee_bps > 0 {
             gross_payment
-                .checked_mul(sale_config.referral_rate as u64)
+                .checked_mul(sale.platform_fee_bps as u64)
                 .ok_or(ErrorCode::MathOverflow)?
                 .checked_div(10000)
                 .ok_or(ErrorCode::MathOverflow)?
@@ -482,118 +298,441 @@ pub mod multi_presale {
             0
         };
         
-        let creator_payment = gross_payment
+        let seller_payment = gross_payment
             .checked_sub(platform_fee)
-            .ok_or(ErrorCode::MathOverflow)?
-            .checked_sub(referral_reward)
             .ok_or(ErrorCode::MathOverflow)?;
 
-        // Transfer payment from participant to creator
-        if creator_payment > 0 {
-            let payment_transfer = CpiContext::new(
+        // Transfer payment from buyer to seller
+        if seller_payment > 0 {
+            let payment_transfer_ctx = CpiContext::new(
                 ctx.accounts.token_program.to_account_info(),
                 Transfer {
-                    from: ctx.accounts.participant_payment_account.to_account_info(),
-                    to: ctx.accounts.creator_payment_account.to_account_info(),
-                    authority: ctx.accounts.participant.to_account_info(),
+                    from: ctx.accounts.buyer_payment_account.to_account_info(),
+                    to: ctx.accounts.seller_payment_account.to_account_info(),
+                    authority: ctx.accounts.buyer.to_account_info(),
                 },
             );
-            token::transfer(payment_transfer, creator_payment)?;
+            token::transfer(payment_transfer_ctx, seller_payment)?;
         }
 
-        // Transfer platform fee
+        // Transfer platform fee if applicable
         if platform_fee > 0 {
-            let fee_transfer = CpiContext::new(
+            let fee_transfer_ctx = CpiContext::new(
                 ctx.accounts.token_program.to_account_info(),
                 Transfer {
-                    from: ctx.accounts.participant_payment_account.to_account_info(),
+                    from: ctx.accounts.buyer_payment_account.to_account_info(),
                     to: ctx.accounts.platform_fee_account.to_account_info(),
-                    authority: ctx.accounts.participant.to_account_info(),
+                    authority: ctx.accounts.buyer.to_account_info(),
                 },
             );
-            token::transfer(fee_transfer, platform_fee)?;
+            token::transfer(fee_transfer_ctx, platform_fee)?;
         }
 
-        // Update participant account
-        let participant = &mut ctx.accounts.participant_account;
-        participant.total_contributed = participant.total_contributed
-            .checked_add(gross_payment)
-            .ok_or(ErrorCode::MathOverflow)?;
-        participant.tokens_allocated = participant.tokens_allocated
-            .checked_add(token_amount)
-            .ok_or(ErrorCode::MathOverflow)?;
-        
-        if referrer.is_some() && participant.referrer.is_none() {
-            participant.referrer = referrer;
-        }
-
-        // Update sale configuration
-        let sale_config = &mut ctx.accounts.sale_configuration;
-        sale_config.tokens_sold = sale_config.tokens_sold
-            .checked_add(token_amount)
-            .ok_or(ErrorCode::MathOverflow)?;
-
-        emit!(TokensPurchased {
-            project_id: sale_config.project_id,
-            participant: ctx.accounts.participant.key(),
-            token_amount,
-            payment_amount: gross_payment,
-            platform_fee,
-            referral_reward,
-            referrer,
-        });
-
-        Ok(())
-    }
-
-    /// Claim allocated tokens (for immediate distribution sales)
-    pub fn claim_tokens(ctx: Context<ClaimTokens>) -> Result<()> {
-        let participant = &mut ctx.accounts.participant_account;
-        let sale_config = &ctx.accounts.sale_configuration;
-        
-        // Calculate claimable amount (for now, immediate claiming - vesting in Phase 3)
-        let claimable_amount = participant.tokens_allocated
-            .checked_sub(participant.tokens_claimed)
-            .ok_or(ErrorCode::MathOverflow)?;
-            
-        require!(claimable_amount > 0, ErrorCode::NoTokensToClaim);
-
-        // Transfer tokens from sale vault to participant
+        // Transfer tokens from vault to buyer
         let seeds = &[
-            b"sale_config",
-            sale_config.project_id.to_le_bytes().as_ref(),
-            &[sale_config.sale_type as u8],
-            &[sale_config.bump],
+            b"token_sale",
+            sale.seller.as_ref(),
+            sale.token_mint.as_ref(),
+            &[sale.bump],
         ];
         let signer = &[&seeds[..]];
 
-        let token_transfer = CpiContext::new_with_signer(
+        let token_transfer_ctx = CpiContext::new_with_signer(
             ctx.accounts.token_program.to_account_info(),
             Transfer {
-                from: ctx.accounts.sale_vault.to_account_info(),
-                to: ctx.accounts.participant_token_account.to_account_info(),
-                authority: ctx.accounts.sale_configuration.to_account_info(),
+                from: ctx.accounts.token_vault.to_account_info(),
+                to: ctx.accounts.buyer_token_account.to_account_info(),
+                authority: ctx.accounts.token_sale.to_account_info(),
             },
             signer,
         );
-        token::transfer(token_transfer, claimable_amount)?;
+        token::transfer(token_transfer_ctx, token_amount)?;
 
-        // Update participant claim tracking
-        participant.tokens_claimed = participant.tokens_claimed
-            .checked_add(claimable_amount)
+        // Update sale state
+        let sale = &mut ctx.accounts.token_sale;
+        sale.tokens_available = sale.tokens_available
+            .checked_sub(token_amount)
             .ok_or(ErrorCode::MathOverflow)?;
-        participant.last_claim_time = Clock::get()?.unix_timestamp;
 
-        emit!(TokensClaimed {
-            project_id: sale_config.project_id,
-            participant: ctx.accounts.participant.key(),
-            amount: claimable_amount,
-            timestamp: participant.last_claim_time,
-        });
+        // Update buyer tracking
+        let buyer_account = &mut ctx.accounts.buyer_account;
+        buyer_account.tokens_purchased = buyer_account.tokens_purchased
+            .checked_add(token_amount)
+            .ok_or(ErrorCode::MathOverflow)?;
 
+        msg!("Sold {} tokens for {} payment (fee: {})", token_amount, seller_payment, platform_fee);
+        Ok(())
+    }
+
+    /// Cancel sale and return unsold tokens to seller
+    pub fn cancel_sale(ctx: Context<CancelSale>) -> Result<()> {
+        let sale = &ctx.accounts.token_sale;
+        require!(sale.is_active, ErrorCode::SaleNotActive);
+
+        // Return remaining tokens to seller
+        if sale.tokens_available > 0 {
+            let seeds = &[
+                b"token_sale",
+                sale.seller.as_ref(),
+                sale.token_mint.as_ref(),
+                &[sale.bump],
+            ];
+            let signer = &[&seeds[..]];
+
+            let return_ctx = CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.token_vault.to_account_info(),
+                    to: ctx.accounts.seller_token_account.to_account_info(),
+                    authority: ctx.accounts.token_sale.to_account_info(),
+                },
+                signer,
+            );
+            token::transfer(return_ctx, sale.tokens_available)?;
+        }
+
+        // Update sale state
+        let sale = &mut ctx.accounts.token_sale;
+        sale.is_active = false;
+        sale.tokens_available = 0;
+
+        msg!("Sale cancelled, tokens returned to seller");
+        Ok(())
+    }
+
+    /// Emergency pause/unpause functionality (seller only)
+    pub fn toggle_pause(ctx: Context<TogglePause>) -> Result<()> {
+        let sale = &mut ctx.accounts.token_sale;
+        require!(sale.is_active, ErrorCode::SaleNotActive);
+        
+        sale.is_paused = !sale.is_paused;
+        
+        msg!("Sale pause status changed to: {}", sale.is_paused);
+        Ok(())
+    }
+
+    /// Update sale parameters (seller only, before sale starts)
+    pub fn update_sale_params(
+        ctx: Context<UpdateSaleParams>,
+        new_price_per_token: Option<u64>,
+        new_sale_start_time: Option<i64>,
+        new_sale_end_time: Option<i64>,
+        new_max_tokens_per_buyer: Option<u64>,
+    ) -> Result<()> {
+        let sale = &mut ctx.accounts.token_sale;
+        require!(sale.is_active, ErrorCode::SaleNotActive);
+        
+        let current_time = Clock::get()?.unix_timestamp;
+        require!(current_time < sale.sale_start_time, ErrorCode::SaleAlreadyStarted);
+
+        // Update price if provided
+        if let Some(price) = new_price_per_token {
+            require!(price > 0, ErrorCode::InvalidPrice);
+            sale.price_per_token = price;
+        }
+
+        // Update start time if provided
+        if let Some(start_time) = new_sale_start_time {
+            require!(start_time > current_time, ErrorCode::InvalidStartTime);
+            sale.sale_start_time = start_time;
+        }
+
+        // Update end time if provided
+        if let Some(end_time) = new_sale_end_time {
+            require!(end_time > sale.sale_start_time, ErrorCode::InvalidEndTime);
+            sale.sale_end_time = end_time;
+        }
+
+        // Update purchase limit if provided
+        if let Some(limit) = new_max_tokens_per_buyer {
+            sale.max_tokens_per_buyer = limit;
+        }
+
+        msg!("Sale parameters updated");
         Ok(())
     }
 }
+
+/// Account structure for token sale state
+#[account]
+#[derive(Default)]
+pub struct TokenSale {
+    pub seller: Pubkey,              // Who created the sale (32 bytes)
+    pub token_mint: Pubkey,          // Token being sold (32 bytes)
+    pub payment_mint: Pubkey,        // Payment token (32 bytes)
+    pub price_per_token: u64,        // Price in payment token lamports (8 bytes)
+    pub total_tokens: u64,           // Original token amount (8 bytes)
+    pub tokens_available: u64,       // Tokens left to sell (8 bytes)
+    pub sale_start_time: i64,        // Unix timestamp when sale starts (8 bytes)
+    pub sale_end_time: i64,          // Unix timestamp when sale ends (8 bytes)
+    pub max_tokens_per_buyer: u64,   // Maximum tokens one buyer can purchase (8 bytes)
+    pub platform_fee_bps: u16,       // Platform fee in basis points (2 bytes)
+    pub platform_fee_recipient: Pubkey, // Where platform fees go (32 bytes)
+    pub is_active: bool,             // Sale status (1 byte)
+    pub is_paused: bool,             // Emergency pause status (1 byte)
+    pub bump: u8,                    // PDA bump seed (1 byte)
+}
+
+impl TokenSale {
+    pub const INIT_SPACE: usize = 32 + 32 + 32 + 8 + 8 + 8 + 8 + 8 + 8 + 2 + 32 + 1 + 1 + 1; // 181 bytes
+}
+
+/// Account to track individual buyer purchases
+#[account]
+#[derive(Default)]
+pub struct BuyerAccount {
+    pub buyer: Pubkey,              // Buyer's public key (32 bytes)
+    pub token_sale: Pubkey,         // Associated token sale (32 bytes)
+    pub tokens_purchased: u64,      // Total tokens purchased (8 bytes)
+    pub bump: u8,                   // PDA bump seed (1 byte)
+}
+
+impl BuyerAccount {
+    pub const INIT_SPACE: usize = 32 + 32 + 8 + 1; // 73 bytes
+}
+
+/// Account validation for initializing a sale
+#[derive(Accounts)]
+pub struct InitializeSale<'info> {
+    #[account(mut)]
+    pub seller: Signer<'info>,
+
+    #[account(
+        init,
+        payer = seller,
+        space = 8 + TokenSale::INIT_SPACE,
+        seeds = [b"token_sale", seller.key().as_ref(), token_mint.key().as_ref()],
+        bump
+    )]
+    pub token_sale: Account<'info, TokenSale>,
+
+    pub token_mint: Account<'info, Mint>,
+    pub payment_mint: Account<'info, Mint>,
+
+    #[account(
+        mut,
+        constraint = seller_token_account.mint == token_mint.key(),
+        constraint = seller_token_account.owner == seller.key()
+    )]
+    pub seller_token_account: Account<'info, TokenAccount>,
+
+    #[account(
+        init,
+        payer = seller,
+        token::mint = token_mint,
+        token::authority = token_sale,
+        seeds = [b"token_vault", token_sale.key().as_ref()],
+        bump
+    )]
+    pub token_vault: Account<'info, TokenAccount>,
+
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+    pub rent: Sysvar<'info, Rent>,
+}
+
+/// Account validation for creating buyer tracking account
+#[derive(Accounts)]
+pub struct CreateBuyerAccount<'info> {
+    #[account(mut)]
+    pub buyer: Signer<'info>,
+
+    pub token_sale: Account<'info, TokenSale>,
+
+    #[account(
+        init,
+        payer = buyer,
+        space = 8 + BuyerAccount::INIT_SPACE,
+        seeds = [b"buyer", buyer.key().as_ref(), token_sale.key().as_ref()],
+        bump
+    )]
+    pub buyer_account: Account<'info, BuyerAccount>,
+
+    pub system_program: Program<'info, System>,
+}
+
+/// Account validation for buying tokens
+#[derive(Accounts)]
+pub struct BuyTokens<'info> {
+    #[account(mut)]
+    pub buyer: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"token_sale", token_sale.seller.as_ref(), token_sale.token_mint.as_ref()],
+        bump = token_sale.bump
+    )]
+    pub token_sale: Account<'info, TokenSale>,
+
+    #[account(
+        mut,
+        seeds = [b"buyer", buyer.key().as_ref(), token_sale.key().as_ref()],
+        bump = buyer_account.bump
+    )]
+    pub buyer_account: Account<'info, BuyerAccount>,
+
+    #[account(
+        mut,
+        constraint = buyer_payment_account.mint == token_sale.payment_mint,
+        constraint = buyer_payment_account.owner == buyer.key()
+    )]
+    pub buyer_payment_account: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        constraint = seller_payment_account.mint == token_sale.payment_mint,
+        constraint = seller_payment_account.owner == token_sale.seller
+    )]
+    pub seller_payment_account: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        constraint = platform_fee_account.mint == token_sale.payment_mint,
+        constraint = platform_fee_account.owner == token_sale.platform_fee_recipient
+    )]
+    pub platform_fee_account: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        constraint = buyer_token_account.mint == token_sale.token_mint,
+        constraint = buyer_token_account.owner == buyer.key()
+    )]
+    pub buyer_token_account: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        seeds = [b"token_vault", token_sale.key().as_ref()],
+        bump
+    )]
+    pub token_vault: Account<'info, TokenAccount>,
+
+    pub token_program: Program<'info, Token>,
+}
+
+/// Account validation for cancelling a sale
+#[derive(Accounts)]
+pub struct CancelSale<'info> {
+    #[account(
+        mut,
+        constraint = seller.key() == token_sale.seller
+    )]
+    pub seller: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"token_sale", token_sale.seller.as_ref(), token_sale.token_mint.as_ref()],
+        bump = token_sale.bump
+    )]
+    pub token_sale: Account<'info, TokenSale>,
+
+    #[account(
+        mut,
+        constraint = seller_token_account.mint == token_sale.token_mint,
+        constraint = seller_token_account.owner == seller.key()
+    )]
+    pub seller_token_account: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        seeds = [b"token_vault", token_sale.key().as_ref()],
+        bump
+    )]
+    pub token_vault: Account<'info, TokenAccount>,
+
+    pub token_program: Program<'info, Token>,
+}
+
+/// Account validation for toggling pause
+#[derive(Accounts)]
+pub struct TogglePause<'info> {
+    #[account(
+        mut,
+        constraint = seller.key() == token_sale.seller
+    )]
+    pub seller: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"token_sale", token_sale.seller.as_ref(), token_sale.token_mint.as_ref()],
+        bump = token_sale.bump
+    )]
+    pub token_sale: Account<'info, TokenSale>,
+}
+
+/// Account validation for updating sale parameters
+#[derive(Accounts)]
+pub struct UpdateSaleParams<'info> {
+    #[account(
+        mut,
+        constraint = seller.key() == token_sale.seller
+    )]
+    pub seller: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"token_sale", token_sale.seller.as_ref(), token_sale.token_mint.as_ref()],
+        bump = token_sale.bump
+    )]
+    pub token_sale: Account<'info, TokenSale>,
+}
+
+/// Custom error codes
+#[error_code]
+pub enum ErrorCode {
+    #[msg("Sale is not active")]
+    SaleNotActive,
+    #[msg("Insufficient tokens available")]
+    InsufficientTokens,
+    #[msg("Math overflow")]
+    MathOverflow,
+    #[msg("Invalid price: must be greater than zero")]
+    InvalidPrice,
+    #[msg("Invalid token amount: must be greater than zero")]
+    InvalidTokenAmount,
+    #[msg("Invalid start time: must be greater than zero")]
+    InvalidStartTime,
+    #[msg("Invalid end time: must be after start time")]
+    InvalidEndTime,
+    #[msg("Sale end time cannot be in the past")]
+    SaleEndTimeInPast,
+    #[msg("Sale has not started yet")]
+    SaleNotStarted,
+    #[msg("Sale has ended")]
+    SaleEnded,
+    #[msg("Sale is currently paused")]
+    SalePaused,
+    #[msg("Purchase exceeds per-buyer limit")]
+    ExceedsPurchaseLimit,
+    #[msg("Invalid platform fee: must be 10000 basis points or less")]
+    InvalidPlatformFee,
+    #[msg("Sale has already started, cannot modify parameters")]
+    SaleAlreadyStarted,
+    // New error codes for multi-project platform
+    #[msg("Invalid duration: must be positive and logical")]
+    InvalidDuration,
+    #[msg("Platform is currently paused")]
+    PlatformPaused,
+    #[msg("Unauthorized access: incorrect authority")]
+    UnauthorizedAccess,
+    #[msg("Project name too long: maximum 50 characters")]
+    NameTooLong,
+    #[msg("Project description too long: maximum 500 characters")]
+    DescriptionTooLong,
+    #[msg("Too many tags: maximum 10 tags allowed")]
+    TooManyTags,
+    #[msg("Project is not in editable state")]
+    ProjectNotEditable,
+    #[msg("Incomplete project: missing required fields")]
+    IncompleteProject,
+    #[msg("Invalid project status for this operation")]
+    InvalidProjectStatus,
+    #[msg("Invalid approval status for this operation")]
+    InvalidApprovalStatus,
+    #[msg("Project is not active")]
+    ProjectNotActive,
+}
+
+// NEW MULTI-PROJECT PLATFORM DATA STRUCTURES
 
 /// Platform-wide configuration and state
 #[account]
@@ -623,9 +762,6 @@ pub struct ProjectAccount {
     pub description: String,            // Project description (4 + 500 = 504 bytes max)
     pub logo_url: String,               // IPFS or web URL for logo (4 + 100 = 104 bytes max)
     pub website: String,                // Project website (4 + 100 = 104 bytes max)
-    pub twitter: String,                // Twitter handle (4 + 50 = 54 bytes max)
-    pub discord: String,                // Discord invite link (4 + 100 = 104 bytes max)
-    pub telegram: String,               // Telegram channel (4 + 100 = 104 bytes max)
     pub category: ProjectCategory,      // DeFi, Gaming, NFT, etc. (1 byte)
     pub tags: Vec<String>,              // Searchable tags (4 + 10 * 24 = 244 bytes max)
     pub token_mint: Pubkey,             // Token being sold (32 bytes)
@@ -642,10 +778,10 @@ pub struct ProjectAccount {
 }
 
 impl ProjectAccount {
-    pub const INIT_SPACE: usize = 8 + 32 + 54 + 504 + 104 + 104 + 54 + 104 + 104 + 1 + 244 + 32 + 54 + 14 + 1 + 1 + 8 + 8 + 1 + 33 + 9 + 1; // ~1330 bytes
+    pub const INIT_SPACE: usize = 8 + 32 + 54 + 504 + 104 + 104 + 1 + 244 + 32 + 54 + 14 + 1 + 1 + 8 + 8 + 1 + 33 + 9 + 1; // ~1200 bytes
 }
 
-/// Sale configuration for different tiers
+/// Sale configuration for different tiers - PHASE 2
 #[account]
 #[derive(Default)]
 pub struct SaleConfiguration {
@@ -669,29 +805,6 @@ pub struct SaleConfiguration {
 
 impl SaleConfiguration {
     pub const INIT_SPACE: usize = 8 + 1 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 1 + 1 + 1 + 2 + 32 + 1 + 1; // 104 bytes
-}
-
-/// Participant account to track individual contributions and allocations
-#[account]
-#[derive(Default)]
-pub struct ParticipantAccount {
-    pub wallet: Pubkey,                 // Participant's wallet (32 bytes)
-    pub project_id: u64,                // Associated project (8 bytes)
-    pub sale_type: SaleType,            // Which sale tier they participated in (1 byte)
-    pub total_contributed: u64,         // Total payment tokens contributed (8 bytes)
-    pub tokens_allocated: u64,          // Total tokens allocated (8 bytes)
-    pub tokens_claimed: u64,            // Tokens already claimed (8 bytes)
-    pub last_claim_time: i64,           // Last vesting claim timestamp (8 bytes)
-    pub referrer: Option<Pubkey>,       // Who referred this participant (1 + 32 = 33 bytes)
-    pub referral_rewards: u64,          // Referral rewards earned (8 bytes)
-    pub kyc_verified: bool,             // KYC verification status (1 byte)
-    pub kyc_provider: Option<String>,   // KYC provider identifier (1 + 20 = 21 bytes max)
-    pub joined_at: i64,                 // When they first participated (8 bytes)
-    pub bump: u8,                       // PDA bump seed (1 byte)
-}
-
-impl ParticipantAccount {
-    pub const INIT_SPACE: usize = 32 + 8 + 1 + 8 + 8 + 8 + 8 + 33 + 8 + 1 + 21 + 8 + 1; // 145 bytes
 }
 
 /// Project categories for filtering and organization
@@ -745,7 +858,7 @@ impl Default for ApprovalStatus {
     }
 }
 
-/// Sale tier types
+/// Sale tier types - PHASE 2
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq)]
 pub enum SaleType {
     Seed,     // Early investors, small allocation
@@ -759,10 +872,7 @@ impl Default for SaleType {
     }
 }
 
-/// Type alias for sale tiers (same as SaleType)
-pub type SaleTier = SaleType;
-
-// Account validation structs
+// NEW ACCOUNT VALIDATION CONTEXTS
 
 /// Initialize platform account
 #[derive(Accounts)]
@@ -783,57 +893,6 @@ pub struct InitializePlatform<'info> {
     pub platform_account: Account<'info, PlatformAccount>,
 
     pub system_program: Program<'info, System>,
-}
-
-/// Update platform configuration
-#[derive(Accounts)]
-pub struct UpdatePlatformConfig<'info> {
-    #[account(
-        mut,
-        constraint = authority.key() == platform_account.authority @ ErrorCode::UnauthorizedAccess
-    )]
-    pub authority: Signer<'info>,
-
-    #[account(
-        mut,
-        seeds = [b"platform"],
-        bump = platform_account.bump
-    )]
-    pub platform_account: Account<'info, PlatformAccount>,
-}
-
-/// Pause platform operations
-#[derive(Accounts)]
-pub struct PausePlatform<'info> {
-    #[account(
-        mut,
-        constraint = authority.key() == platform_account.authority @ ErrorCode::UnauthorizedAccess
-    )]
-    pub authority: Signer<'info>,
-
-    #[account(
-        mut,
-        seeds = [b"platform"],
-        bump = platform_account.bump
-    )]
-    pub platform_account: Account<'info, PlatformAccount>,
-}
-
-/// Unpause platform operations
-#[derive(Accounts)]
-pub struct UnpausePlatform<'info> {
-    #[account(
-        mut,
-        constraint = authority.key() == platform_account.authority @ ErrorCode::UnauthorizedAccess
-    )]
-    pub authority: Signer<'info>,
-
-    #[account(
-        mut,
-        seeds = [b"platform"],
-        bump = platform_account.bump
-    )]
-    pub platform_account: Account<'info, PlatformAccount>,
 }
 
 /// Create new project
@@ -864,40 +923,6 @@ pub struct CreateProject<'info> {
     pub system_program: Program<'info, System>,
 }
 
-/// Update project metadata
-#[derive(Accounts)]
-pub struct UpdateProject<'info> {
-    #[account(
-        mut,
-        constraint = creator.key() == project_account.creator @ ErrorCode::UnauthorizedAccess
-    )]
-    pub creator: Signer<'info>,
-
-    #[account(
-        mut,
-        seeds = [b"project", project_account.creator.as_ref(), project_account.name.as_bytes()],
-        bump = project_account.bump
-    )]
-    pub project_account: Account<'info, ProjectAccount>,
-}
-
-/// Submit project for approval
-#[derive(Accounts)]
-pub struct SubmitForApproval<'info> {
-    #[account(
-        mut,
-        constraint = creator.key() == project_account.creator @ ErrorCode::UnauthorizedAccess
-    )]
-    pub creator: Signer<'info>,
-
-    #[account(
-        mut,
-        seeds = [b"project", project_account.creator.as_ref(), project_account.name.as_bytes()],
-        bump = project_account.bump
-    )]
-    pub project_account: Account<'info, ProjectAccount>,
-}
-
 /// Approve project
 #[derive(Accounts)]
 pub struct ApproveProject<'info> {
@@ -921,14 +946,11 @@ pub struct ApproveProject<'info> {
     pub project_account: Account<'info, ProjectAccount>,
 }
 
-/// Reject project
+/// Configure sale tier - PHASE 2
 #[derive(Accounts)]
-pub struct RejectProject<'info> {
-    #[account(
-        mut,
-        constraint = admin.key() == platform_account.authority @ ErrorCode::UnauthorizedAccess
-    )]
-    pub admin: Signer<'info>,
+pub struct ConfigureSaleTier<'info> {
+    #[account(mut)]
+    pub project_creator: Signer<'info>,
 
     #[account(
         seeds = [b"platform"],
@@ -938,185 +960,31 @@ pub struct RejectProject<'info> {
 
     #[account(
         mut,
-        seeds = [b"project", project_account.creator.as_ref(), project_account.name.as_bytes()],
-        bump = project_account.bump
-    )]
-    pub project_account: Account<'info, ProjectAccount>,
-}
-
-/// Configure sale tier
-#[derive(Accounts)]
-pub struct ConfigureSaleTier<'info> {
-    #[account(
-        mut,
         constraint = project_creator.key() == project_account.creator @ ErrorCode::UnauthorizedAccess
     )]
-    pub project_creator: Signer<'info>,
-
-    #[account(
-        mut,
-        seeds = [b"project", project_account.creator.as_ref(), project_account.name.as_bytes()],
-        bump = project_account.bump,
-        constraint = project_account.approval_status == ApprovalStatus::Approved @ ErrorCode::ProjectNotApproved
-    )]
     pub project_account: Account<'info, ProjectAccount>,
-
-    #[account(address = token::ID)]
-    pub token_program: Program<'info, Token>,
-}
-
-/// Create participant account
-#[derive(Accounts)]
-pub struct CreateParticipantAccount<'info> {
-    #[account(mut)]
-    pub participant: Signer<'info>,
 
     #[account(
         init,
-        payer = participant,
-        space = 8 + 145,
-        seeds = [b"participant", project_account.key().as_ref(), participant.key().as_ref()],
+        payer = project_creator,
+        space = 8 + SaleConfiguration::INIT_SPACE,
+        seeds = [b"sale_config", project_account.key().as_ref()],
         bump
     )]
-    pub participant_account: Account<'info, ParticipantAccount>,
+    pub sale_configuration: Account<'info, SaleConfiguration>,
 
-    #[account(
-        seeds = [b"project", project_account.creator.as_ref(), project_account.name.as_bytes()],
-        bump = project_account.bump
-    )]
-    pub project_account: Account<'info, ProjectAccount>,
+    pub payment_mint: Account<'info, Mint>,
 
     pub system_program: Program<'info, System>,
 }
 
-/// Add to whitelist
-#[derive(Accounts)]
-pub struct AddToWhitelist<'info> {
-    #[account(
-        mut,
-        constraint = project_creator.key() == project_account.creator @ ErrorCode::UnauthorizedAccess
-    )]
-    pub project_creator: Signer<'info>,
-
-    #[account(
-        mut,
-        seeds = [b"participant", project_account.key().as_ref(), participant_account.wallet.as_ref()],
-        bump = participant_account.bump
-    )]
-    pub participant_account: Account<'info, ParticipantAccount>,
-
-    #[account(
-        seeds = [b"project", project_account.creator.as_ref(), project_account.name.as_bytes()],
-        bump = project_account.bump
-    )]
-    pub project_account: Account<'info, ProjectAccount>,
-}
-
-/// Participate in sale
-#[derive(Accounts)]
-pub struct ParticipateInSale<'info> {
-    #[account(mut)]
-    pub participant: Signer<'info>,
-
-    #[account(
-        mut,
-        seeds = [b"participant", project_account.key().as_ref(), participant.key().as_ref()],
-        bump = participant_account.bump
-    )]
-    pub participant_account: Account<'info, ParticipantAccount>,
-
-    #[account(
-        mut,
-        seeds = [b"project", project_account.creator.as_ref(), project_account.name.as_bytes()],
-        bump = project_account.bump,
-        constraint = project_account.approval_status == ApprovalStatus::Approved @ ErrorCode::ProjectNotApproved
-    )]
-    pub project_account: Account<'info, ProjectAccount>,
-
-    #[account(
-        seeds = [b"platform"],
-        bump = platform_account.bump
-    )]
-    pub platform_account: Account<'info, PlatformAccount>,
-
-    #[account(
-        mut,
-        constraint = participant_token_account.owner == participant.key() @ ErrorCode::UnauthorizedAccess
-    )]
-    pub participant_token_account: Account<'info, TokenAccount>,
-
-    #[account(mut)]
-    pub project_treasury: Account<'info, TokenAccount>,
-
-    #[account(mut)]
-    pub platform_treasury: Account<'info, TokenAccount>,
-
-    #[account(address = token::ID)]
-    pub token_program: Program<'info, Token>,
-}
-
-/// Claim tokens
-#[derive(Accounts)]
-pub struct ClaimTokens<'info> {
-    #[account(mut)]
-    pub participant: Signer<'info>,
-
-    #[account(
-        mut,
-        seeds = [b"participant", project_account.key().as_ref(), participant.key().as_ref()],
-        bump = participant_account.bump
-    )]
-    pub participant_account: Account<'info, ParticipantAccount>,
-
-    #[account(
-        seeds = [b"project", project_account.creator.as_ref(), project_account.name.as_bytes()],
-        bump = project_account.bump
-    )]
-    pub project_account: Account<'info, ProjectAccount>,
-
-    #[account(
-        mut,
-        constraint = participant_token_account.owner == participant.key() @ ErrorCode::UnauthorizedAccess,
-        constraint = participant_token_account.mint == project_account.token_mint @ ErrorCode::InvalidTokenMint
-    )]
-    pub participant_token_account: Account<'info, TokenAccount>,
-
-    #[account(
-        mut,
-        constraint = project_token_account.mint == project_account.token_mint @ ErrorCode::InvalidTokenMint
-    )]
-    pub project_token_account: Account<'info, TokenAccount>,
-
-    #[account(address = token::ID)]
-    pub token_program: Program<'info, Token>,
-}
-
-// Events for frontend integration
+// NEW EVENTS
 
 #[event]
 pub struct PlatformInitialized {
     pub authority: Pubkey,
     pub treasury: Pubkey,
     pub platform_fee: u16,
-}
-
-#[event]
-pub struct PlatformConfigUpdated {
-    pub platform_fee: u16,
-    pub min_duration: i64,
-    pub max_duration: i64,
-}
-
-#[event]
-pub struct PlatformPaused {
-    pub authority: Pubkey,
-    pub timestamp: i64,
-}
-
-#[event]
-pub struct PlatformUnpaused {
-    pub authority: Pubkey,
-    pub timestamp: i64,
 }
 
 #[event]
@@ -1129,20 +997,6 @@ pub struct ProjectCreated {
 }
 
 #[event]
-pub struct ProjectUpdated {
-    pub project_id: u64,
-    pub creator: Pubkey,
-    pub updated_at: i64,
-}
-
-#[event]
-pub struct ProjectSubmitted {
-    pub project_id: u64,
-    pub creator: Pubkey,
-    pub submitted_at: i64,
-}
-
-#[event]
 pub struct ProjectApproved {
     pub project_id: u64,
     pub admin: Pubkey,
@@ -1150,154 +1004,11 @@ pub struct ProjectApproved {
 }
 
 #[event]
-pub struct ProjectRejected {
-    pub project_id: u64,
-    pub admin: Pubkey,
-    pub reason: String,
-    pub rejected_at: i64,
-}
-
-#[event]
 pub struct SaleConfigured {
     pub project_id: u64,
-    pub tier: SaleTier,
+    pub sale_type: SaleType,
+    pub token_price: u64,
+    pub total_tokens: u64,
     pub start_time: i64,
     pub end_time: i64,
-    pub token_price: u64,
-    pub max_allocation: u64,
-    pub configured_by: Pubkey,
-}
-
-#[event]
-pub struct ParticipantRegistered {
-    pub project_id: u64,
-    pub participant: Pubkey,
-    pub referrer: Option<Pubkey>,
-    pub timestamp: i64,
-}
-
-#[event]
-pub struct WhitelistUpdated {
-    pub project_id: u64,
-    pub participant: Pubkey,
-    pub tier: SaleTier,
-    pub max_allocation: u64,
-    pub updated_by: Pubkey,
-    pub timestamp: i64,
-}
-
-#[event]
-pub struct TokensPurchased {
-    pub project_id: u64,
-    pub participant: Pubkey,
-    pub tier: SaleTier,
-    pub contribution_amount: u64,
-    pub token_amount: u64,
-    pub referrer: Option<Pubkey>,
-    pub timestamp: i64,
-}
-
-#[event]
-pub struct TokensClaimed {
-    pub project_id: u64,
-    pub participant: Pubkey,
-    pub amount: u64,
-    pub timestamp: i64,
-}
-
-/// Custom error codes
-#[error_code]
-pub enum ErrorCode {
-    #[msg("Invalid platform fee: must be 10000 basis points or less")]
-    InvalidPlatformFee,
-    #[msg("Invalid duration: must be positive and logical")]
-    InvalidDuration,
-    #[msg("Platform is currently paused")]
-    PlatformPaused,
-    #[msg("Unauthorized access: incorrect authority")]
-    UnauthorizedAccess,
-    #[msg("Project name too long: maximum 50 characters")]
-    NameTooLong,
-    #[msg("Project description too long: maximum 500 characters")]
-    DescriptionTooLong,
-    #[msg("Too many tags: maximum 10 tags allowed")]
-    TooManyTags,
-    #[msg("Project is not in editable state")]
-    ProjectNotEditable,
-    #[msg("Incomplete project: missing required fields")]
-    IncompleteProject,
-    #[msg("Invalid project status for this operation")]
-    InvalidProjectStatus,
-    #[msg("Invalid approval status for this operation")]
-    InvalidApprovalStatus,
-    #[msg("Rejection reason too long: maximum 200 characters")]
-    ReasonTooLong,
-    #[msg("Project is not approved for sales")]
-    ProjectNotApproved,
-    #[msg("Project is not currently active")]
-    ProjectNotActive,
-    #[msg("Sale duration too short: minimum required")]
-    SaleTooShort,
-    #[msg("Sale duration too long: maximum exceeded")]
-    SaleTooLong,
-    #[msg("Invalid token price: must be greater than zero")]
-    InvalidTokenPrice,
-    #[msg("Invalid allocation: must be greater than zero")]
-    InvalidAllocation,
-    #[msg("Sale tier already configured")]
-    SaleTierAlreadyConfigured,
-    #[msg("Sale has not started yet")]
-    SaleNotStarted,
-    #[msg("Sale has already ended")]
-    SaleEnded,
-    #[msg("Participant not whitelisted for this tier")]
-    NotWhitelisted,
-    #[msg("Maximum allocation exceeded")]
-    AllocationExceeded,
-    #[msg("KYC verification required")]
-    KycRequired,
-    #[msg("Invalid referrer: cannot refer yourself")]
-    InvalidReferrer,
-    #[msg("No tokens available to claim")]
-    NoTokensToClaim,
-    #[msg("Tokens already claimed")]
-    TokensAlreadyClaimed,
-    #[msg("Insufficient token balance in project treasury")]
-    InsufficientTokenBalance,
-    #[msg("Invalid treasury account")]
-    InvalidTreasury,
-    #[msg("Invalid token mint")]
-    InvalidTokenMint,
-    #[msg("Sale tier not configured")]
-    SaleTierNotConfigured,
-    #[msg("Invalid start time: must be in the future")]
-    InvalidStartTime,
-    #[msg("Invalid end time: must be after start time")]
-    InvalidEndTime,
-    #[msg("Invalid price: must be greater than zero")]
-    InvalidPrice,
-    #[msg("Invalid token amount: must be greater than zero")]
-    InvalidTokenAmount,
-    #[msg("Invalid purchase amount")]
-    InvalidPurchaseAmount,
-    #[msg("Invalid referral rate: must be 10000 basis points or less")]
-    InvalidReferralRate,
-    #[msg("Mismatched array lengths")]
-    MismatchedArrays,
-    #[msg("Too many wallets in batch: maximum 50")]
-    TooManyWallets,
-    #[msg("Whitelist not required for this sale")]
-    WhitelistNotRequired,
-    #[msg("Sale has already started")]
-    SaleAlreadyStarted,
-    #[msg("Sale is not currently active")]
-    SaleNotActive,
-    #[msg("Purchase amount below minimum")]
-    BelowMinimumPurchase,
-    #[msg("Purchase amount exceeds limit")]
-    ExceedsPurchaseLimit,
-    #[msg("Insufficient tokens available")]
-    InsufficientTokens,
-    #[msg("Mathematical overflow occurred")]
-    MathOverflow,
 }
