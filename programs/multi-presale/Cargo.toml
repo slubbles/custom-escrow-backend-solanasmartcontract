@@ -1,0 +1,21 @@
+[package]
+name = "multi-presale"
+version = "0.1.0"
+description = "Multi-project token presale platform with tiered sales and vesting"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "multi_presale"
+
+[features]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+cpi = ["no-entrypoint"]
+default = []
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
+
+[dependencies]
+anchor-lang = "0.31.0"
+anchor-spl = "0.31.0"
