@@ -1,38 +1,23 @@
 {
-  "name": "custom-escrow",
-  "version": "1.0.0",
-  "description": "Production-grade token sale platform built on Solana with enterprise security features",
+  "name": "multi-project-token-sale-platform",
+  "version": "2.0.0",
+  "description": "Production-ready multi-project token sale platform on Solana with enterprise security features",
   "main": "index.js",
   "scripts": {
-    "test": "yarn run ts-mocha -p ./tsconfig.json tests/escrow-*.ts",
-    "test:validation": "yarn run ts-mocha -p ./tsconfig.json tests/escrow-validation.ts",
-    "test:integration": "yarn run ts-mocha -p ./tsconfig.json tests/escrow-integration.ts",
-    "test:deployment": "yarn run ts-mocha -p ./tsconfig.json tests/escrow-deployment.ts",
-    "test:devnet": "ANCHOR_PROVIDER_URL=https://api.devnet.solana.com yarn run ts-mocha -p ./tsconfig.json tests/devnet-deployment-test.ts",
+    "test": "anchor test --skip-deploy",
+    "test:live": "anchor test --skip-deploy",
+    "test:build": "anchor build && anchor test",
     
     "build": "anchor build",
     "clean": "anchor clean",
     
-    "deploy": "anchor deploy",
     "deploy:devnet": "anchor deploy --provider.cluster devnet",
-    "deploy:solana:devnet": "cp configs/solana-devnet.toml Anchor.toml && anchor deploy --provider.cluster devnet",
-    "deploy:solana:mainnet": "cp configs/solana-mainnet.toml Anchor.toml && anchor deploy --provider.cluster mainnet-beta",
+    "deploy:mainnet": "anchor deploy --provider.cluster mainnet-beta",
     
-    "deploy:soon:testnet": "cp configs/soon-network.toml Anchor.toml && anchor deploy --provider.cluster soon-testnet",
-    "deploy:soon:devnet": "cp configs/soon-devnet.toml Anchor.toml && anchor deploy --provider.cluster https://rpc.fc.devnet.soo.network/rpc",
-    "deploy:soon:mainnet": "cp configs/soon-network.toml Anchor.toml && anchor deploy --provider.cluster https://rpc.mainnet.soo.network/rpc",
-    
-    "test:solana": "cp configs/solana-devnet.toml Anchor.toml && yarn run ts-mocha -p ./tsconfig.json tests/solana/**/*.ts",
-    "test:soon": "cp configs/soon-network.toml Anchor.toml && yarn run ts-mocha -p ./tsconfig.json tests/soon/**/*.ts",
-    
-    "verify:soon:mainnet": "node scripts/verify-soon-deployment.js",
-    "test:all-networks": "npm run test:solana && npm run test:soon",
-    
-    "switch:solana": "cp configs/solana-devnet.toml Anchor.toml",
-    "switch:soon": "cp configs/soon-network.toml Anchor.toml"
+    "verify:contracts": "solana program show 3n4Jusc6GmZXTJapNbDpr4DYKFSsZUhz2XKuJVL6Kmy5 --url devnet && solana program show HVpfkkSxd5aiCALZ8CETUxrWBfUwWCtJSxxtUsZhFrt4 --url devnet"
   },
   "devDependencies": {
-    "@coral-xyz/anchor": "^0.30.1",
+    "@coral-xyz/anchor": "^0.31.0",
     "@solana/web3.js": "^1.95.3",
     "@solana/spl-token": "^0.4.8",
     "@types/chai": "^4.3.0",
@@ -46,10 +31,19 @@
   "keywords": [
     "solana",
     "anchor",
+    "token-sale",
+    "multi-project",
     "escrow",
     "blockchain",
-    "smart-contract"
+    "smart-contract",
+    "defi",
+    "web3"
   ],
-  "author": "Custom Escrow Team",
-  "license": "MIT"
+  "author": "Token Sale Platform Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/slubbles/custom-escrow"
+  },
+  "homepage": "https://github.com/slubbles/custom-escrow#readme"
 }

@@ -10,8 +10,11 @@ node_modules/
 # Build outputs
 /target/
 /programs/*/target/
-*.so
-*.dylib
+
+# Keep important deployment artifacts
+!target/idl/
+!target/types/
+!target/deploy/*.json
 
 # Logs
 *.log
@@ -28,6 +31,20 @@ yarn-error.log*
 
 # OS files
 .DS_Store
+Thumbs.db
+
+# Anchor
+.anchor/
+test-ledger/
+
+# Rust
+Cargo.lock
+**/*.rs.bk
+
+# Local development
+.cache/
+dist/
+coverage/
 Thumbs.db
 
 # Test coverage

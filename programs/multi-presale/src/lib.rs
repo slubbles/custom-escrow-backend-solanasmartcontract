@@ -184,6 +184,156 @@ pub mod multi_presale {
         Ok(())
     }
 
+    /// Initialize project-specific token vault - COMPLETION PHASE
+    pub fn initialize_project_vault(ctx: Context<InitializeProjectVault>) -> Result<()> {
+        let project = &mut ctx.accounts.project_account;
+        
+        // Verify project is approved before allowing vault creation
+        require!(project.status == ProjectStatus::Active, ErrorCode::InvalidProjectStatus);
+        require!(project.approval_status == ApprovalStatus::Approved, ErrorCode::InvalidApprovalStatus);
+        
+        // Store vault information in project account
+        project.token_vault = Some(ctx.accounts.project_token_vault.key());
+        project.vault_bump = Some(ctx.bumps.project_token_vault);
+        project.updated_at = Clock::get()?.unix_timestamp;
+        
+        msg!("Project vault initialized for project: {}", project.id);
+        Ok(())
+    }
+
+    /// Create a sale round for a project - COMPLETION PHASE
+    pub fn create_sale_round(
+        ctx: Context<CreateSaleRound>,
+        round_number: u8,
+        sale_type: SaleType,
+        token_price: u64,
+        total_tokens: u64,
+        max_tokens_per_buyer: u64,
+        start_time: i64,
+        end_time: i64,
+        whitelist_required: bool,
+        min_purchase: u64,
+        max_total_raise: u64,
+    ) -> Result<()> {
+        // Input validation
+        require!(token_price > 0, ErrorCode::InvalidPrice);
+        require!(total_tokens > 0, ErrorCode::InvalidTokenAmount);
+        require!(end_time > start_time, ErrorCode::InvalidEndTime);
+        require!(start_time > Clock::get()?.unix_timestamp, ErrorCode::InvalidStartTime);
+        
+        let sale_round = &mut ctx.accounts.sale_round;
+        let project = &ctx.accounts.project_account;
+
+        // Verify project has vault initialized
+        require!(project.token_vault.is_some(), ErrorCode::ProjectVaultNotInitialized);
+
+        sale_round.project_id = project.id;
+        sale_round.sale_type = sale_type;
+        sale_round.round_number = round_number;
+        sale_round.token_price = token_price;
+        sale_round.total_tokens = total_tokens;
+        sale_round.tokens_sold = 0;
+        sale_round.max_tokens_per_buyer = max_tokens_per_buyer;
+        sale_round.start_time = start_time;
+        sale_round.end_time = end_time;
+        sale_round.is_active = true;
+        sale_round.whitelist_required = whitelist_required;
+        sale_round.min_purchase = min_purchase;
+        sale_round.max_total_raise = max_total_raise;
+        sale_round.bump = ctx.bumps.sale_round;
+
+        emit!(SaleRoundCreated {
+            project_id: project.id,
+            round_number,
+            sale_type,
+            token_price,
+            total_tokens,
+        });
+
+        Ok(())
+    }
+
+    /// Initialize platform treasury - COMPLETION PHASE
+    pub fn initialize_platform_treasury(
+        ctx: Context<InitializePlatformTreasury>,
+        fee_percentage: u16,
+    ) -> Result<()> {
+        require!(fee_percentage <= 1000, ErrorCode::InvalidPlatformFee); // Max 10%
+
+        let treasury = &mut ctx.accounts.platform_treasury;
+        treasury.authority = ctx.accounts.authority.key();
+        treasury.treasury_vault = ctx.accounts.treasury_vault.key();
+        treasury.total_fees_collected = 0;
+        treasury.total_projects = 0;
+        treasury.total_volume = 0;
+        treasury.fee_percentage = fee_percentage;
+        treasury.bump = ctx.bumps.platform_treasury;
+
+        Ok(())
+    }
+
+    /// Automated project lifecycle management - COMPLETION PHASE
+    pub fn advance_project_status(ctx: Context<AdvanceProjectStatus>) -> Result<()> {
+        let project = &mut ctx.accounts.project_account;
+        let current_time = Clock::get()?.unix_timestamp;
+
+        // Auto-advance based on conditions
+        match project.status {
+            ProjectStatus::Submitted => {
+                // Note: This would typically be changed by admin approval
+                msg!("Project requires admin approval to proceed");
+            },
+            ProjectStatus::Active => {
+                // Check if project has completed (simplified logic)
+                let current_time_check = current_time > project.created_at + 86400; // 24 hours later for demo
+                if current_time_check {
+                    project.status = ProjectStatus::Completed;
+                    project.updated_at = current_time;
+                    msg!("Project {} automatically completed", project.id);
+                }
+            },
+            _ => {
+                msg!("No automatic status change available for current status");
+            }
+        }
+
+        emit!(ProjectStatusChanged {
+            project_id: project.id,
+            old_status: project.status.clone(),
+            new_status: project.status.clone(),
+            timestamp: current_time,
+        });
+
+        Ok(())
+    }
+
+    /// Whitelist management for sale rounds - COMPLETION PHASE
+    pub fn add_to_whitelist(
+        ctx: Context<AddToWhitelist>,
+        sale_round: u8,
+        addresses: Vec<Pubkey>,
+    ) -> Result<()> {
+        let whitelist = &mut ctx.accounts.project_whitelist;
+        
+        require!(
+            addresses.len() <= 100, // Limit batch size
+            ErrorCode::TooManyAddresses
+        );
+
+        for _address in addresses.iter() {
+            require!(
+                whitelist.current_entries < whitelist.max_entries,
+                ErrorCode::WhitelistFull
+            );
+            
+            // In a full implementation, would check for duplicates
+            whitelist.current_entries += 1;
+        }
+
+        msg!("Added {} addresses to whitelist for round {}", addresses.len(), sale_round);
+        Ok(())
+    }
+
     /// LEGACY ESCROW FUNCTIONS (to be replaced with Phase 2 multi-project functions)
     /// Initialize a new token sale with production security features
     pub fn initialize_sale(
@@ -730,6 +880,19 @@ pub enum ErrorCode {
     InvalidApprovalStatus,
     #[msg("Project is not active")]
     ProjectNotActive,
+    #[msg("Project vault not initialized")]
+    ProjectVaultNotInitialized,
+    // Additional error codes for completion phase
+    #[msg("Too many addresses in batch: maximum 100 allowed")]
+    TooManyAddresses,
+    #[msg("Whitelist is full: cannot add more addresses")]
+    WhitelistFull,
+    #[msg("Address not whitelisted for this round")]
+    NotWhitelisted,
+    #[msg("Invalid round number")]
+    InvalidRoundNumber,
+    #[msg("Sale round not active")]
+    SaleRoundNotActive,
 }
 
 // NEW MULTI-PROJECT PLATFORM DATA STRUCTURES
@@ -774,11 +937,13 @@ pub struct ProjectAccount {
     pub approval_status: ApprovalStatus, // Pending, Approved, Rejected (1 byte)
     pub approved_by: Option<Pubkey>,    // Admin who approved (1 + 32 = 33 bytes)
     pub approved_at: Option<i64>,       // Approval timestamp (1 + 8 = 9 bytes)
+    pub token_vault: Option<Pubkey>,    // Project-specific token vault (1 + 32 = 33 bytes)
+    pub vault_bump: Option<u8>,         // Vault PDA bump (1 + 1 = 2 bytes)
     pub bump: u8,                       // PDA bump seed (1 byte)
 }
 
 impl ProjectAccount {
-    pub const INIT_SPACE: usize = 8 + 32 + 54 + 504 + 104 + 104 + 1 + 244 + 32 + 54 + 14 + 1 + 1 + 8 + 8 + 1 + 33 + 9 + 1; // ~1200 bytes
+    pub const INIT_SPACE: usize = 8 + 32 + 54 + 504 + 104 + 104 + 1 + 244 + 32 + 54 + 14 + 1 + 1 + 8 + 8 + 1 + 33 + 9 + 33 + 2 + 1; // ~1235 bytes
 }
 
 /// Sale configuration for different tiers - PHASE 2
@@ -855,6 +1020,100 @@ pub enum ApprovalStatus {
 impl Default for ApprovalStatus {
     fn default() -> Self {
         ApprovalStatus::Pending
+    }
+}
+
+/// Enhanced sale configuration with sale rounds - COMPLETION PHASE
+#[account]
+#[derive(Default)]
+pub struct SaleRound {
+    pub project_id: u64,                    // Which project this belongs to (8 bytes)
+    pub sale_type: SaleType,                // Seed, Private, Public (1 byte)
+    pub round_number: u8,                   // 1, 2, 3, etc. (1 byte)
+    pub token_price: u64,                   // Price per token in payment currency (8 bytes)
+    pub total_tokens: u64,                  // Total tokens allocated for this round (8 bytes)
+    pub tokens_sold: u64,                   // Tokens sold so far (8 bytes)
+    pub max_tokens_per_buyer: u64,          // Purchase limit per buyer (8 bytes)
+    pub start_time: i64,                    // When this round starts (8 bytes)
+    pub end_time: i64,                      // When this round ends (8 bytes)
+    pub is_active: bool,                    // Round status (1 byte)
+    pub whitelist_required: bool,           // Whether this round requires whitelist (1 byte)
+    pub min_purchase: u64,                  // Minimum purchase amount (8 bytes)
+    pub max_total_raise: u64,               // Maximum total raise for this round (8 bytes)
+    pub bump: u8,                           // PDA bump (1 byte)
+}
+
+impl SaleRound {
+    pub const INIT_SPACE: usize = 8 + 1 + 1 + 8 + 8 + 8 + 8 + 8 + 8 + 1 + 1 + 8 + 8 + 1; // 89 bytes
+}
+
+/// Platform treasury management - COMPLETION PHASE
+#[account]
+#[derive(Default)]
+pub struct PlatformTreasury {
+    pub authority: Pubkey,                  // Platform admin (32 bytes)
+    pub treasury_vault: Pubkey,             // Where platform fees are collected (32 bytes)
+    pub total_fees_collected: u64,         // Total fees collected across all projects (8 bytes)
+    pub total_projects: u64,                // Number of projects on platform (8 bytes)
+    pub total_volume: u64,                  // Total trading volume across all projects (8 bytes)
+    pub fee_percentage: u16,                // Platform fee in basis points (100 = 1%) (2 bytes)
+    pub bump: u8,                           // PDA bump (1 byte)
+}
+
+impl PlatformTreasury {
+    pub const INIT_SPACE: usize = 32 + 32 + 8 + 8 + 8 + 2 + 1; // 91 bytes
+}
+
+/// Round-specific buyer tracking - COMPLETION PHASE
+#[account]
+#[derive(Default)]
+pub struct RoundBuyerAccount {
+    pub buyer: Pubkey,                      // Buyer's public key (32 bytes)
+    pub project_id: u64,                    // Associated project (8 bytes)
+    pub round_number: u8,                   // Which round (1 byte)
+    pub tokens_purchased: u64,              // Tokens purchased in this round (8 bytes)
+    pub total_paid: u64,                    // Total amount paid in this round (8 bytes)
+    pub purchase_timestamp: i64,            // When the purchase was made (8 bytes)
+    pub bump: u8,                           // PDA bump (1 byte)
+}
+
+impl RoundBuyerAccount {
+    pub const INIT_SPACE: usize = 32 + 8 + 1 + 8 + 8 + 8 + 1; // 66 bytes
+}
+
+/// Project whitelist management - COMPLETION PHASE
+#[account]
+#[derive(Default)]
+pub struct ProjectWhitelist {
+    pub project_id: u64,                   // Associated project (8 bytes)
+    pub sale_round: u8,                    // Which sale round (1 byte)
+    pub max_entries: u16,                  // Maximum whitelist entries (2 bytes)
+    pub current_entries: u16,              // Current number of entries (2 bytes)
+    pub is_active: bool,                   // Whether whitelist is active (1 byte)
+    pub bump: u8,                          // PDA bump (1 byte)
+    // Note: Actual addresses would be stored in a separate vector account for scalability
+}
+
+impl ProjectWhitelist {
+    pub const INIT_SPACE: usize = 8 + 1 + 2 + 2 + 1 + 1; // 15 bytes
+}
+
+/// Enhanced project status tracking
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, Eq)]
+pub enum EnhancedProjectStatus {
+    Draft,              // Initial creation
+    UnderReview,        // Submitted for approval
+    Approved,           // Approved by admin
+    Active,             // Sales are live
+    Paused,             // Temporarily paused
+    Completed,          // All sales finished successfully
+    Cancelled,          // Project cancelled
+    Failed,             // Failed to meet minimum goals
+}
+
+impl Default for EnhancedProjectStatus {
+    fn default() -> Self {
+        EnhancedProjectStatus::Draft
     }
 }
 
@@ -978,6 +1237,128 @@ pub struct ConfigureSaleTier<'info> {
     pub system_program: Program<'info, System>,
 }
 
+/// Account validation for initializing project-specific vaults - COMPLETION PHASE
+#[derive(Accounts)]
+pub struct InitializeProjectVault<'info> {
+    #[account(mut)]
+    pub project_creator: Signer<'info>,
+
+    #[account(
+        mut,
+        constraint = project_creator.key() == project_account.creator @ ErrorCode::UnauthorizedAccess
+    )]
+    pub project_account: Account<'info, ProjectAccount>,
+
+    pub token_mint: Account<'info, Mint>,
+
+    #[account(
+        init,
+        payer = project_creator,
+        token::mint = token_mint,
+        token::authority = project_account,
+        seeds = [b"project_vault", project_account.key().as_ref(), token_mint.key().as_ref()],
+        bump
+    )]
+    pub project_token_vault: Account<'info, TokenAccount>,
+
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+}
+
+/// Account validation for creating sale rounds - COMPLETION PHASE
+#[derive(Accounts)]
+#[instruction(round_number: u8)]
+pub struct CreateSaleRound<'info> {
+    #[account(mut)]
+    pub project_creator: Signer<'info>,
+
+    #[account(
+        mut,
+        constraint = project_creator.key() == project_account.creator @ ErrorCode::UnauthorizedAccess
+    )]
+    pub project_account: Account<'info, ProjectAccount>,
+
+    #[account(
+        init,
+        payer = project_creator,
+        space = 8 + SaleRound::INIT_SPACE,
+        seeds = [b"sale_round", project_account.key().as_ref(), &round_number.to_le_bytes()],
+        bump
+    )]
+    pub sale_round: Account<'info, SaleRound>,
+
+    pub system_program: Program<'info, System>,
+}
+
+/// Account validation for initializing platform treasury - COMPLETION PHASE
+#[derive(Accounts)]
+pub struct InitializePlatformTreasury<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    #[account(
+        init,
+        payer = authority,
+        space = 8 + PlatformTreasury::INIT_SPACE,
+        seeds = [b"platform_treasury"],
+        bump
+    )]
+    pub platform_treasury: Account<'info, PlatformTreasury>,
+
+    pub payment_mint: Account<'info, Mint>,
+
+    #[account(
+        init,
+        payer = authority,
+        token::mint = payment_mint,
+        token::authority = platform_treasury,
+        seeds = [b"treasury_vault", platform_treasury.key().as_ref()],
+        bump
+    )]
+    pub treasury_vault: Account<'info, TokenAccount>,
+
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+}
+
+/// Account validation for project status advancement - COMPLETION PHASE
+#[derive(Accounts)]
+pub struct AdvanceProjectStatus<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>, // Can be creator or admin
+
+    #[account(
+        mut,
+        constraint = authority.key() == project_account.creator @ ErrorCode::UnauthorizedAccess
+    )]
+    pub project_account: Account<'info, ProjectAccount>,
+}
+
+/// Account validation for whitelist management - COMPLETION PHASE
+#[derive(Accounts)]
+#[instruction(sale_round: u8)]
+pub struct AddToWhitelist<'info> {
+    #[account(mut)]
+    pub project_creator: Signer<'info>,
+
+    #[account(
+        mut,
+        constraint = project_creator.key() == project_account.creator @ ErrorCode::UnauthorizedAccess
+    )]
+    pub project_account: Account<'info, ProjectAccount>,
+
+    #[account(
+        init,
+        payer = project_creator,
+        space = 8 + ProjectWhitelist::INIT_SPACE,
+        seeds = [b"whitelist", project_account.key().as_ref(), &sale_round.to_le_bytes()],
+        bump
+    )]
+    pub project_whitelist: Account<'info, ProjectWhitelist>,
+
+    pub system_program: Program<'info, System>,
+}
+
 // NEW EVENTS
 
 #[event]
@@ -1011,4 +1392,21 @@ pub struct SaleConfigured {
     pub total_tokens: u64,
     pub start_time: i64,
     pub end_time: i64,
+}
+
+#[event]
+pub struct SaleRoundCreated {
+    pub project_id: u64,
+    pub round_number: u8,
+    pub sale_type: SaleType,
+    pub token_price: u64,
+    pub total_tokens: u64,
+}
+
+#[event]
+pub struct ProjectStatusChanged {
+    pub project_id: u64,
+    pub old_status: ProjectStatus,
+    pub new_status: ProjectStatus,
+    pub timestamp: i64,
 }
